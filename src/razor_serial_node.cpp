@@ -10,8 +10,6 @@
 #include "sigint.h"
 
 #define loop_rate_value 100
-#define GYRO_SCALE 2000
-#define ACCEL_SCALE 16384
 
 int main(int argc, char ** argv)
 {
@@ -23,18 +21,26 @@ int main(int argc, char ** argv)
     ros::Rate loop_rate(100);
             
     // Params management:
-    int baud;    
+    int baud;
+    double mag_x_offset, mag_y_offset, mag_z_offset, mag_x_scale, mag_y_scale, mag_z_scale;
     bool pub_rviz_tf;
-    std::string port, pub_name, frame_id, parent_frame_id;
+    std::string port, pub_imu_name, pub_mag_name, frame_id, parent_frame_id;
     n_param.param<std::string>("port", port, "/dev/ttyACM0");
-    n_param.param<std::string>("pub_name", pub_name, "imu/data");
+    n_param.param<std::string>("imu_pub_name", pub_imu_name, "imu/data");
+    n_param.param<std::string>("mag_pub_name", pub_mag_name, "megnetometer/data");
     n_param.param<std::string>("frame_id", frame_id, "imu_link");
     n_param.param<std::string>("parent_frame_id", parent_frame_id, "base_link");
-    n_param.param("baud", baud, 115200);    
+    n_param.param("baud", baud, 115200);
+    n_param.param("mag_x_offset", mag_x_offset, -34.7105);
+    n_param.param("mag_y_offset", mag_y_offset, 22.6914);
+    n_param.param("mag_z_offset", mag_z_offset, 43.0564);
+    n_param.param("mag_x_scale", mag_x_scale, 0.9031);
+    n_param.param("mag_y_scale", mag_y_scale, 1.0340);
+    n_param.param("mag_z_scale", mag_z_scale, 1.0803);
     n_param.param("pub_rviz_tf", pub_rviz_tf, false);    
 
-    ros::Publisher imu_pub = nh.advertise<sensor_msgs::Imu>(pub_name, 1);
-    //ros::Publisher mag_pub = nh.advertise<sensor_msgs::MagneticField>(pub_mag_name, 1);
+    ros::Publisher imu_pub = nh.advertise<sensor_msgs::Imu>(pub_imu_name, 1);
+    ros::Publisher mag_pub = nh.advertise<sensor_msgs::MagneticField>(pub_mag_name, 1);
     
     // port, baudrate, timeout in milliseconds
     serial::Serial razor(port, baud, serial::Timeout::simpleTimeout(1000));    
@@ -52,7 +58,7 @@ int main(int argc, char ** argv)
     }
     
     sensor_msgs::Imu imu_msg;
-    sensor_msgs::MagneticField mag;  
+    sensor_msgs::MagneticField mag_msg;  
     tf::Quaternion q;
     tf::TransformBroadcaster broadcaster;  
     /*
@@ -93,6 +99,11 @@ int main(int argc, char ** argv)
         0.04, 0, 0,
         0, 0.04, 0,
         0, 0, 0.04};
+
+    mag_msg.magnetic_field_covariance = {
+        0.05, 0, 0,
+        0, 0.05, 0,
+        0, 0, 0.05};
     
     std::string data, token;    
     int seq = 0;
@@ -133,13 +144,13 @@ int main(int argc, char ** argv)
                     imu_msg.angular_velocity.z = std::atof(token.c_str())*deg2rad;
                     break;
                 case 7:
-                    mag.magnetic_field.x = std::atof(token.c_str());
+                    mag_msg.magnetic_field.x = (std::atof(token.c_str()) - mag_x_offset) * mag_x_scale/1000000;
                     break;
                 case 8:
-                    mag.magnetic_field.y = std::atof(token.c_str());
+                    mag_msg.magnetic_field.y = (std::atof(token.c_str()) - mag_y_offset) * mag_y_scale/1000000;
                     break;
                 case 9:
-                    mag.magnetic_field.z = std::atof(token.c_str());
+                    mag_msg.magnetic_field.z = (std::atof(token.c_str()) - mag_z_offset) * mag_z_scale/1000000;
                     break;
                 case 10:
                     roll = std::atof(token.c_str())*deg2rad;
@@ -163,18 +174,26 @@ int main(int argc, char ** argv)
         imu_msg.header.stamp = ros::Time::now();
         imu_msg.header.frame_id = frame_id;
         imu_msg.header.seq = seq;
-        seq++;
-
+        
         imu_pub.publish(imu_msg);
-        if(pub_rviz_tf) broadcaster.sendTransform(
+
+        if(pub_rviz_tf)
+        {
+            broadcaster.sendTransform(
             tf::StampedTransform(tf::Transform(tf::createQuaternionFromRPY(roll, pitch, yaw), 
             tf::Vector3(0.0, 0.0, 0.0)),
             ros::Time::now(),
             frame_id,
             parent_frame_id));
-        /*
-        mag.header.frame_id = frame_id;
-        mag_pub.publish(mag);*/
+        }        
+
+        mag_msg.header.frame_id = frame_id;
+        mag_msg.header.stamp = ros::Time::now();
+        mag_msg.header.seq = seq;
+
+        mag_pub.publish(mag);
+
+        seq++;
         
         loop_rate.sleep();
         ros::spinOnce();
